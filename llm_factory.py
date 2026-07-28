@@ -184,18 +184,15 @@ def _build_watsonx(
             "langchain-ibm is required for watsonx. "
             "Install with: pip install langchain-ibm ibm-watsonx-ai"
         ) from exc
-    params: dict[str, Any] = {
-        "decoding_method": "greedy",
-        "temperature": 0,
-        "max_new_tokens": 2048,
-        "repetition_penalty": 1.05,
-    }
     return ChatWatsonx(
         model_id=model,
         url=url,
         project_id=project_id,
         apikey=api_key,
-        params=params,
+        params={
+            "temperature": 0,
+            "max_tokens": 2048,
+        },
     )
 
 
