@@ -460,7 +460,13 @@ async function init() {
     const fd = new FormData();
     files.forEach((f) => fd.append("files", f));
     fd.append("do_mask", $("do_mask").checked ? "true" : "false");
-    setHtml($("load-status"), `<div class="info">Extracting and indexing ${files.length} file(s)…</div>`);
+    const btn = $("btn-load");
+    btn.disabled = true;
+    const sizeMb = (files.reduce((n, f) => n + (f.size || 0), 0) / (1024 * 1024)).toFixed(1);
+    setHtml(
+      $("load-status"),
+      `<div class="info">Extracting and indexing ${files.length} file(s) (~${sizeMb} MB). Large LogCollector zips can take 30–90s — please wait…</div>`
+    );
     try {
       const res = await fetch("/api/load", { method: "POST", body: fd, credentials: "same-origin" });
       const data = await res.json();
@@ -479,6 +485,8 @@ async function init() {
       $("btn-analyze").disabled = false;
     } catch (e) {
       setHtml($("load-status"), `<div class="error">${escapeHtml(e.message)}</div>`);
+    } finally {
+      btn.disabled = false;
     }
   });
 

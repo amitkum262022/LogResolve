@@ -4,10 +4,12 @@ FastAPI entrypoint for LogResolve — OpenPages log analysis UI and API.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 import uuid
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, Optional
 
@@ -178,7 +180,10 @@ async def load_bundle(
             data = await f.read()
             payloads.append((f.filename or "upload.log", data))
         mask_flag = str(do_mask).lower() in ("1", "true", "yes", "on")
-        state = load_bundle_bytes(payloads, do_mask=mask_flag)
+        loop = asyncio.get_running_loop()
+        state = await loop.run_in_executor(
+            None, partial(load_bundle_bytes, payloads, do_mask=mask_flag)
+        )
         sid = _sid(request)
         _BUNDLES[sid] = state
         return JSONResponse(

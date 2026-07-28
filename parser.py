@@ -177,18 +177,38 @@ class OpenPagesZipParser:
 
     EXTRACT_DIR = Path("./extracted_logs")
 
+    # Keep only the tail of oversized log members. Full LogCollector zips often
+    # contain multi-hundred-MB rotated logs; the newest lines matter for RCA.
+    MAX_FILE_BYTES = 2 * 1024 * 1024  # 2 MiB per log file
+
     # Error-severity markers that start a capturable chunk.
     _ERROR_MARKERS = ("ERROR", "FATAL", "Exception", "CRITICAL")
 
-    def __init__(self, zip_bytes: bytes) -> None:
+    def __init__(self, zip_bytes: bytes, *, extract_to_disk: bool = False) -> None:
         if not zip_bytes:
             raise ValueError("zip_bytes must be a non-empty bytes object")
         self._zip_bytes = zip_bytes
+        self._extract_to_disk = extract_to_disk
+
+    @staticmethod
+    def _tail_bytes(raw: bytes, limit: int) -> bytes:
+        """Return the last ``limit`` bytes of ``raw``, snapped to a line start."""
+        if limit <= 0 or len(raw) <= limit:
+            return raw
+        chunk = raw[-limit:]
+        nl = chunk.find(b"\n")
+        if 0 <= nl < len(chunk) - 1:
+            chunk = chunk[nl + 1 :]
+        return chunk
 
     def extract_bundle(self) -> dict[str, str]:
         """
-        Decompress the bundle into ``./extracted_logs`` and concatenate text
-        by category.
+        Parse the bundle and concatenate text by category.
+
+        When ``extract_to_disk`` is True (off by default), also writes members
+        to ``./extracted_logs`` for local inspection. In-memory mode is much
+        faster for large bundles. Each log member is capped to
+        ``MAX_FILE_BYTES`` (newest tail kept).
 
         Includes **all** log-like members (not only Cognos). Known families are
         grouped; remaining logs are keyed by filename stem.
@@ -202,11 +222,13 @@ class OpenPagesZipParser:
             ValueError: If the archive contains no categorisable log files.
         """
         dest_root = self.EXTRACT_DIR.resolve()
-        dest_root.mkdir(parents=True, exist_ok=True)
+        if self._extract_to_disk:
+            dest_root.mkdir(parents=True, exist_ok=True)
 
         category_parts: dict[str, list[str]] = defaultdict(list)
         skipped_non_log = 0
         skipped_binary = 0
+        truncated_files = 0
 
         try:
             with zipfile.ZipFile(BytesIO(self._zip_bytes), "r") as zf:
@@ -220,26 +242,35 @@ class OpenPagesZipParser:
                     basename = Path(name.replace("\\", "/")).name
                     category = _categorise(basename)
 
-                    target = dest_root / name.replace("\\", "/")
-                    target.parent.mkdir(parents=True, exist_ok=True)
-
                     if category is None:
-                        # Still extract for local inspection, but skip analysis.
-                        with zf.open(info) as src, open(target, "wb") as dst:
-                            dst.write(src.read())
+                        if self._extract_to_disk:
+                            target = dest_root / name.replace("\\", "/")
+                            target.parent.mkdir(parents=True, exist_ok=True)
+                            with zf.open(info) as src, open(target, "wb") as dst:
+                                dst.write(src.read())
                         skipped_non_log += 1
                         continue
 
                     raw = zf.read(info)
-                    with open(target, "wb") as dst:
-                        dst.write(raw)
+                    truncated = False
+                    if len(raw) > self.MAX_FILE_BYTES:
+                        raw = self._tail_bytes(raw, self.MAX_FILE_BYTES)
+                        truncated = True
+                        truncated_files += 1
+
+                    if self._extract_to_disk:
+                        target = dest_root / name.replace("\\", "/")
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        with open(target, "wb") as dst:
+                            dst.write(raw)
 
                     if _looks_binary(raw):
                         skipped_binary += 1
                         continue
 
                     text = _decode_bytes(raw)
-                    header = f"===== BEGIN {name.replace(chr(92), '/')} =====\n"
+                    note = " (tail only)" if truncated else ""
+                    header = f"===== BEGIN {name.replace(chr(92), '/')}{note} =====\n"
                     footer = f"\n===== END {basename} =====\n"
                     category_parts[category].append(header + text + footer)
         except zipfile.BadZipFile as exc:

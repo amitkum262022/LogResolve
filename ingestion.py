@@ -60,6 +60,28 @@ class LooseFilesUploadSource(LogBundleSource):
 
     def fetch_bundle(self) -> bytes:
         """Return a zip that contains all uploaded logs / nested zip members."""
+        # Fast path: a single .zip is already a valid LogCollector bundle —
+        # do not decompress and re-pack (that doubles memory and time).
+        if len(self._uploaded_files) == 1:
+            uploaded = self._uploaded_files[0]
+            name = (getattr(uploaded, "name", None) or "").lower()
+            data = uploaded.getvalue()
+            if not isinstance(data, (bytes, bytearray)):
+                raise TypeError(f"{name or 'upload'}: getvalue() must return bytes")
+            raw = bytes(data)
+            if name.endswith(".zip"):
+                # Validate by opening the central directory only — do not
+                # CRC-scan every member (testzip) on large LogCollector zips.
+                try:
+                    with zipfile.ZipFile(BytesIO(raw), "r") as zf:
+                        if not zf.namelist():
+                            raise zipfile.BadZipFile("empty zip archive")
+                except zipfile.BadZipFile as exc:
+                    raise zipfile.BadZipFile(
+                        f"Uploaded file {name!r} is not a valid zip: {exc}"
+                    ) from exc
+                return raw
+
         buf = BytesIO()
         with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as out_zf:
             for uploaded in self._uploaded_files:

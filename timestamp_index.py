@@ -9,7 +9,7 @@ rather than raising — log files are messy and must never crash the indexer.
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from dateutil import parser as dateutil_parser
@@ -39,6 +39,47 @@ class TimestampIndexer:
         r"\s+\d{1,2}\s+\d{2}:\d{2}:\d{2})"
     )
 
+    _ISO_BASIC = (
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d",
+    )
+
+    def _parse_fast(self, raw: str) -> Optional[datetime]:
+        """Parse common OpenPages / Java formats without dateutil."""
+        s = raw.replace(",", ".")
+        # Strip trailing Z / offset for strptime; re-apply UTC if Z.
+        tz_utc = False
+        if s.endswith("Z"):
+            s = s[:-1]
+            tz_utc = True
+        # Drop fractional seconds for strptime (keep wall-clock second).
+        if "." in s[19:] if len(s) > 19 else False:
+            head, frac = s.split(".", 1)
+            # frac may include offset like 123+0000 — strip non-digits from frac head
+            digits = []
+            for ch in frac:
+                if ch.isdigit():
+                    digits.append(ch)
+                else:
+                    # remaining is offset e.g. +00:00
+                    rest = frac[len(digits) :]
+                    if rest.startswith(("+", "-")):
+                        # ignore offset for speed; treat as naive local
+                        pass
+                    s = head
+                    break
+            else:
+                s = head
+
+        for fmt in self._ISO_BASIC:
+            try:
+                dt = datetime.strptime(s, fmt)
+                return dt.replace(tzinfo=timezone.utc) if tz_utc else dt
+            except ValueError:
+                continue
+        return None
+
     def _parse_timestamp(self, line: str) -> Optional[datetime]:
         """
         Attempt to parse a timestamp from the start of ``line``.
@@ -55,13 +96,14 @@ class TimestampIndexer:
             return None
 
         raw = match.group("ts")
-        # Java logs often use comma as the fractional-second separator;
-        # dateutil expects a dot.
+        fast = self._parse_fast(raw)
+        if fast is not None:
+            return fast
+
         normalised = raw.replace(",", ".")
         try:
             return dateutil_parser.parse(normalised, fuzzy=False)
         except (ValueError, OverflowError, TypeError):
-            # Fuzzy=False still fails on some edge cases; try fuzzy as last resort.
             try:
                 return dateutil_parser.parse(normalised, fuzzy=True)
             except (ValueError, OverflowError, TypeError):
@@ -83,7 +125,6 @@ class TimestampIndexer:
             return []
 
         entries: list[dict] = []
-        # splitlines() drops the trailing newline; empty files yield [].
         for idx, line in enumerate(raw_text.splitlines(), start=1):
             entries.append(
                 {
@@ -93,8 +134,6 @@ class TimestampIndexer:
                     "category": category,
                 }
             )
-        # Already in line order; explicit sort documents the contract.
-        entries.sort(key=lambda e: e["line_number"])
         return entries
 
     def filter_by_range(
@@ -120,10 +159,16 @@ class TimestampIndexer:
         for entry in index:
             ts = entry.get("timestamp")
             if ts is None:
-                continue  # unparseable lines drop out when filtering by time
-            if start is not None and ts < start:
                 continue
-            if end is not None and ts > end:
+            # Compare naive/aware safely by stripping tz for range checks.
+            ts_cmp = ts.replace(tzinfo=None) if getattr(ts, "tzinfo", None) else ts
+            start_cmp = (
+                start.replace(tzinfo=None) if start and start.tzinfo else start
+            )
+            end_cmp = end.replace(tzinfo=None) if end and end.tzinfo else end
+            if start_cmp is not None and ts_cmp < start_cmp:
+                continue
+            if end_cmp is not None and ts_cmp > end_cmp:
                 continue
             filtered.append(entry)
         return filtered

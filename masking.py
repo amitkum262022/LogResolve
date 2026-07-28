@@ -19,11 +19,12 @@ class SensitiveDataMasker:
 
     Within a single ``mask()`` call, identical original values always map to
     the same token (e.g. the same IP always becomes ``<IP_1>``).
+
+    Large texts are processed **line-by-line** so expensive regexes never run
+    over multi-megabyte strings (which previously made Load Bundle hang).
     """
 
     # --- Regex patterns (class constants) ---------------------------------
-    # Timestamps are stashed BEFORE port/host masking so values like
-    # ``10:45:32`` are not mistaken for ``host:port``.
     TIMESTAMP_PROTECT_PATTERN: Pattern[str] = re.compile(
         r"("
         r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}"
@@ -40,27 +41,17 @@ class SensitiveDataMasker:
         r"(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b"
     )
 
-    # IPv6: covers compressed forms (::) and full 8-hextet addresses.
-    # Alternatives that retain trailing hextets MUST come before forms that
-    # end at '::', otherwise "fe80::1" would match only "fe80::".
+    # Simpler IPv6: common forms only (avoids catastrophic backtracking).
     IPV6_PATTERN: Pattern[str] = re.compile(
         r"(?<![0-9a-fA-F:])(?:"
         r"(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}"
-        r"|(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}"
-        r"|(?:[0-9a-fA-F]{1,4}:){1,5}(?::[0-9a-fA-F]{1,4}){1,2}"
-        r"|(?:[0-9a-fA-F]{1,4}:){1,4}(?::[0-9a-fA-F]{1,4}){1,3}"
-        r"|(?:[0-9a-fA-F]{1,4}:){1,3}(?::[0-9a-fA-F]{1,4}){1,4}"
-        r"|(?:[0-9a-fA-F]{1,4}:){1,2}(?::[0-9a-fA-F]{1,4}){1,5}"
-        r"|[0-9a-fA-F]{1,4}:(?::[0-9a-fA-F]{1,4}){1,6}"
-        r"|:(?::[0-9a-fA-F]{1,4}){1,7}"
-        r"|::(?:[0-9a-fA-F]{1,4}:){0,5}[0-9a-fA-F]{1,4}"
+        r"|(?:[0-9a-fA-F]{1,4}:){1,6}(?::[0-9a-fA-F]{1,4}){1,6}"
+        r"|::(?:[0-9a-fA-F]{1,4}:){0,6}[0-9a-fA-F]{1,4}"
         r"|(?:[0-9a-fA-F]{1,4}:){1,7}:"
         r"|::"
         r")(?![0-9a-fA-F:])"
     )
 
-    # host:port — skip clock-like ``HH:MM`` / ``HH:MM:SS`` leftovers.
-    # Lookahead rejects another ``:digits`` (time) or a fractional ``,digits``.
     PORT_PATTERN: Pattern[str] = re.compile(
         r"(?<=[\w.\]\)>]):(\d{2,5})\b(?!\s*:\d{2})(?!,\d)"
     )
@@ -73,9 +64,6 @@ class SensitiveDataMasker:
         r"(?:[A-Za-z]:\\|\\\\)(?:[^\s\"'<>|]+\\)*[^\s\"'<>|]*"
     )
 
-    # Hostnames: URL authority (://host) and explicit host-like keys.
-    # Capture groups keep the prefix; only the hostname is replaced.
-    # Avoid matching Java packages after bare whitespace (e.g. ``at com.sun.org...``).
     HOST_PATTERN: Pattern[str] = re.compile(
         r"(?:"
         r"(://)((?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,})"
@@ -85,15 +73,14 @@ class SensitiveDataMasker:
         r")"
     )
 
+    _TS_RESTORE_RE = re.compile(r"__TS_PROTECT_(\d+)__")
+
     def mask(self, text: str) -> tuple[str, dict[str, str]]:
         """
         Replace sensitive values with stable placeholders.
 
         Token families: ``<IP_N>``, ``<PORT_N>``, ``<PATH_N>``, ``<HOST_N>``.
         Numbering is per unique original value within this call.
-
-        Timestamps are temporarily protected so clock fields are never treated
-        as ports, then restored unchanged (they are not entered in token_map).
 
         Returns:
             ``(masked_text, token_map)`` where ``token_map`` maps token ->
@@ -108,64 +95,78 @@ class SensitiveDataMasker:
         counters: dict[str, int] = {"IP": 0, "PORT": 0, "PATH": 0, "HOST": 0}
 
         def _allocate(kind: str, value: str) -> str:
-            if value in value_to_token:
-                return value_to_token[value]
+            existing = value_to_token.get(value)
+            if existing is not None:
+                return existing
             counters[kind] += 1
             token = f"<{kind}_{counters[kind]}>"
             value_to_token[value] = token
             token_map[token] = value
             return token
 
-        # 0) Stash timestamps so ``10:45:32`` cannot become ``:<PORT_n>``.
-        protected_timestamps: list[str] = []
+        def _mask_line(line: str) -> str:
+            if not line:
+                return line
 
-        def _stash_ts(m: re.Match[str]) -> str:
-            protected_timestamps.append(m.group(0))
-            return f"__TS_PROTECT_{len(protected_timestamps) - 1}__"
+            protected: list[str] = []
 
-        result = self.TIMESTAMP_PROTECT_PATTERN.sub(_stash_ts, text)
+            def _stash_ts(m: re.Match[str]) -> str:
+                protected.append(m.group(0))
+                return f"__TS_PROTECT_{len(protected) - 1}__"
 
-        def _sub_full(pattern: Pattern[str], kind: str, s: str) -> str:
-            def repl(m: re.Match[str]) -> str:
-                return _allocate(kind, m.group(0))
+            result = self.TIMESTAMP_PROTECT_PATTERN.sub(_stash_ts, line)
 
-            return pattern.sub(repl, s)
+            # Skip expensive patterns on lines that cannot contain them.
+            if ":" in result:
+                # IPv6 only when hex+colon-like content is present.
+                if any(c in result for c in "abcdefABCDEF") or "::" in result:
+                    result = self.IPV6_PATTERN.sub(
+                        lambda m: _allocate("IP", m.group(0)), result
+                    )
+                result = self.PORT_PATTERN.sub(
+                    lambda m: f":{_allocate('PORT', m.group(1))}", result
+                )
 
-        def _sub_port(s: str) -> str:
-            def repl(m: re.Match[str]) -> str:
-                port = m.group(1)
-                token = _allocate("PORT", port)
-                return f":{token}"
+            if "." in result:
+                result = self.IPV4_PATTERN.sub(
+                    lambda m: _allocate("IP", m.group(0)), result
+                )
 
-            return SensitiveDataMasker.PORT_PATTERN.sub(repl, s)
+            if "\\" in result or ":" in result[:3]:
+                result = self.WINDOWS_PATH_PATTERN.sub(
+                    lambda m: _allocate("PATH", m.group(0)), result
+                )
 
-        result = _sub_full(self.IPV6_PATTERN, "IP", result)
-        result = _sub_port(result)
-        result = _sub_full(self.IPV4_PATTERN, "IP", result)
-        result = _sub_full(self.WINDOWS_PATH_PATTERN, "PATH", result)
-        result = _sub_full(self.UNIX_PATH_PATTERN, "PATH", result)
+            if "/" in result:
+                result = self.UNIX_PATH_PATTERN.sub(
+                    lambda m: _allocate("PATH", m.group(0)), result
+                )
 
-        def _sub_host(s: str) -> str:
-            def repl(m: re.Match[str]) -> str:
-                # Group layout: (://)(host)  OR  (key=)(host) via nested groups.
-                if m.group(1) is not None and m.group(2) is not None:
-                    return m.group(1) + _allocate("HOST", m.group(2))
-                # Second alternative: groups 3=prefix, 4=host
-                prefix = m.group(3) or ""
-                host = m.group(4) or ""
-                if not host:
-                    return m.group(0)
-                return prefix + _allocate("HOST", host)
+            if "://" in result or "host" in result.lower() or "server" in result.lower():
+                def _host_repl(m: re.Match[str]) -> str:
+                    if m.group(1) is not None and m.group(2) is not None:
+                        return m.group(1) + _allocate("HOST", m.group(2))
+                    prefix = m.group(3) or ""
+                    host = m.group(4) or ""
+                    if not host:
+                        return m.group(0)
+                    return prefix + _allocate("HOST", host)
 
-            return SensitiveDataMasker.HOST_PATTERN.sub(repl, s)
+                result = self.HOST_PATTERN.sub(_host_repl, result)
 
-        result = _sub_host(result)
+            if protected:
+                def _restore(m: re.Match[str]) -> str:
+                    idx = int(m.group(1))
+                    return protected[idx] if 0 <= idx < len(protected) else m.group(0)
 
-        # Restore timestamps literally (not as mask tokens).
-        for idx, ts in enumerate(protected_timestamps):
-            result = result.replace(f"__TS_PROTECT_{idx}__", ts)
+                result = self._TS_RESTORE_RE.sub(_restore, result)
 
-        return result, token_map
+            return result
+
+        # Preserve original newlines (including trailing) by splitting carefully.
+        parts = text.splitlines(keepends=True)
+        out: list[str] = [_mask_line(p) for p in parts]
+        return "".join(out), token_map
 
     def unmask(self, masked_text: str, token_map: dict[str, str]) -> str:
         """
