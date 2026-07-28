@@ -197,6 +197,63 @@ Open **http://127.0.0.1:8005**
 
 ---
 
+## Next phase enhancement — live / OpenPages-connected ingest
+
+Today LogResolve is **upload-first** (LogCollector `.zip` or loose logs). A planned next phase is **OpenPages-connected** ingest so operators can pull diagnostics without manual file transfer.
+
+### Why not true “live stream” via REST?
+
+Official OpenPages LogCollector REST endpoints (`POST /v2/logs/collector`, `GET /v2/logs/collector/{process_id}`) were **deprecated and removed** around OpenPages **9.0.0.5+**. Continuous live log streaming over the public OpenPages API is therefore not a durable product path.
+
+“Live” in practice means **on-demand or scheduled pull** of a fresh LogCollector package, then the same mask → index → explore → LangGraph pipeline.
+
+### Extension point already in the codebase
+
+`ingestion.py` defines `OpenPagesAPISource(LogBundleSource)` as a stub. Implementing `fetch_bundle()` to return zip bytes is enough for the rest of the app (parser, masking, UI) to stay unchanged.
+
+### Recommended architecture
+
+```text
+OpenPages node(s)
+   └─ LogCollector CLI / Admin UI job  (or host agent)
+         └─ zip → agent URL / NFS / object storage / Orchestrate skill
+               └─ LogResolve OpenPagesAPISource.fetch_bundle()
+                     └─ existing parser → mask → analyze
+```
+
+| Approach | How “live”? | Notes |
+|----------|-------------|--------|
+| Agent on OP server runs `LogCollector.cmd` / `.sh` | Near real-time or cron | Best for on-prem |
+| Admin UI LogCollector → shared folder / S3 | On demand or scheduled | Simple ops path |
+| watsonx Orchestrate skill wrapping export | On demand | Fits IBM automation stacks |
+| Direct REST LogCollector | Only if OP version still exposes it | Fragile; verify per tenant |
+
+**Example host-side collect (paths/credentials are environment-specific):**
+
+```bash
+# <OP_HOME>/bin
+LogCollector.cmd -f -l /var/op-logs -t latest.zip
+```
+
+### Planned product behavior
+
+1. Sidebar (or ingest section): connection mode **Upload** | **Pull from OpenPages**.
+2. Fields: OpenPages / agent base URL, auth token (or mTLS), optional poll interval.
+3. **Fetch latest logs** → same bundle state as today’s **Load Bundle**.
+4. Optional later: poll every *N* minutes, index only new lines, analyze new ERROR chunks.
+5. Masking remains mandatory before any LLM call.
+
+### Prerequisites from the OpenPages team
+
+- OpenPages version (e.g. 9.0 / 9.1 / on Cloud)
+- Whether LogCollector UI/CLI is enabled and how zips are stored
+- Auth method (API key, OIDC, Basic, mTLS)
+- Whether an agent or Orchestrate skill can run LogCollector and expose the zip
+
+True continuous tailing of Liberty/aurora files would require a **custom agent** (e.g. Filebeat / `tail -F` → LogResolve), not stock OpenPages API — treat that as a separate stretch goal.
+
+---
+
 ## Privacy & security notes
 
 - Masking runs **before** indexing, chunking, and LLM calls when enabled.
