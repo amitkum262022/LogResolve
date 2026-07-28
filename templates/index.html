@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LogResolve — OpenPages Log Analysis</title>
+  <link rel="stylesheet" href="/static/css/styles.css" />
+</head>
+<body>
+  <div class="layout" id="app-layout">
+    <aside class="sidebar" id="config-sidebar">
+      <h1>LogResolve</h1>
+      <div class="caption">OpenPages Log Analysis Assistant</div>
+
+      <h2>LLM</h2>
+      <label for="provider">LLM provider</label>
+      <select id="provider">
+        {% for key, label in providers.items() %}
+        <option value="{{ key }}" {% if saved_settings.get('provider', 'watsonx') == key %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+
+      <div id="creds-openai" class="provider-panel hidden">
+        <label>API key</label>
+        <input type="password" id="openai_api_key" value="{{ saved_settings.get('openai_api_key','') }}" />
+        <label>Model</label>
+        <input type="text" id="openai_model" value="{{ saved_settings.get('openai_model', default_models['openai']) }}" />
+      </div>
+
+      <div id="creds-anthropic" class="provider-panel hidden">
+        <label>API key</label>
+        <input type="password" id="anthropic_api_key" value="{{ saved_settings.get('anthropic_api_key','') }}" />
+        <label>Model</label>
+        <input type="text" id="anthropic_model" value="{{ saved_settings.get('anthropic_model', default_models['anthropic']) }}" />
+      </div>
+
+      <div id="creds-gemini" class="provider-panel hidden">
+        <label>API key</label>
+        <input type="password" id="gemini_api_key" value="{{ saved_settings.get('gemini_api_key','') }}" />
+        <label>Model</label>
+        <input type="text" id="gemini_model" value="{{ saved_settings.get('gemini_model', default_models['gemini']) }}" />
+      </div>
+
+      <div id="creds-watsonx" class="provider-panel hidden">
+        <label>watsonx API key</label>
+        <input type="password" id="watsonx_api_key" value="{{ saved_settings.get('watsonx_api_key','') }}" />
+        <label>Project ID</label>
+        <input type="text" id="watsonx_project_id" value="{{ saved_settings.get('watsonx_project_id','') }}" />
+        <label>watsonx URL</label>
+        <input type="text" id="watsonx_url" value="{{ saved_settings.get('watsonx_url', default_watsonx_url) }}" />
+        <label>Suggested models</label>
+        <select id="watsonx_model_suggestion">
+          <option value="Custom (type below)">Custom (type below)</option>
+          {% for m in watsonx_suggestions %}
+          <option value="{{ m }}">{{ m }}</option>
+          {% endfor %}
+        </select>
+        <label>Model ID (manual entry)</label>
+        <input type="text" id="watsonx_model" value="{{ saved_settings.get('watsonx_model', default_models['watsonx']) }}" />
+      </div>
+
+      <div id="creds-ollama" class="provider-panel hidden">
+        <label>Ollama base URL</label>
+        <input type="text" id="ollama_base_url" value="{{ saved_settings.get('ollama_base_url', default_ollama_url) }}" />
+        <label>Model</label>
+        <input type="text" id="ollama_model" value="{{ saved_settings.get('ollama_model', default_models['ollama']) }}" />
+        <div class="hint">No cloud API key required for local Ollama.</div>
+      </div>
+
+      <div class="row">
+        <button type="button" id="btn-save-settings">Save settings</button>
+        <button type="button" class="secondary" id="btn-clear-settings">Clear saved</button>
+      </div>
+      <div class="hint" id="settings-status">
+        {% if settings_exist %}Local settings loaded from `.local/llm_settings.json`.{% else %}No saved settings yet.{% endif %}
+      </div>
+
+      <h2>Privacy</h2>
+      <label><input type="checkbox" id="do_mask" checked /> Mask sensitive data before analysis</label>
+      <div class="hint" id="mask-warn" class="hidden">Masking disabled — raw values will be sent to the LLM.</div>
+
+      <h2>How to use</h2>
+      <div class="howto">
+        1. Choose an LLM provider and enter credentials.<br />
+        2. Upload a `.zip` and/or loose `.log` files, then Load Bundle.<br />
+        3. Pick categories to include, set max chunks.<br />
+        4. Explore by time / keyword, then Analyze.
+      </div>
+    </aside>
+
+    <main class="main">
+      <button type="button" class="sidebar-toggle" id="btn-toggle-config"
+        aria-expanded="true" aria-controls="config-sidebar" title="Hide config" aria-label="Hide config">
+        <span class="sidebar-toggle-icon" aria-hidden="true"></span>
+      </button>
+      <div class="lr-hero">
+        <p class="lr-brand">LogResolve</p>
+        <p class="lr-tagline">
+          AI-powered OpenPages LogCollector analysis — mask, explore by time,
+          and diagnose root causes with a cyclical LangGraph workflow.
+        </p>
+        <span class="lr-badge" id="active-llm">Active LLM: —</span>
+      </div>
+
+      <section class="lr-section">
+        <h3>1. Ingest logs</h3>
+        <p class="lr-help">Upload a LogCollector .zip, loose .log files, or both.</p>
+        <input type="file" id="file-input" multiple accept=".zip,.log,.txt,.out,.err,.trace" />
+        <div style="margin-top:0.75rem">
+          <button class="btn" id="btn-load" type="button">Load Bundle</button>
+        </div>
+        <div id="load-status"></div>
+      </section>
+
+      <section class="lr-section hidden" id="section-categories">
+        <h3>Categories to include</h3>
+        <p class="lr-help">Search filters the list only — use Keep only visible to drop hidden selections.</p>
+        <div class="field">
+          <input type="text" id="category-search" placeholder="Type to filter, e.g. notification, aurora…" />
+        </div>
+        <div class="toolbar">
+          <button type="button" data-cat-action="all">Select all</button>
+          <button type="button" data-cat-action="none">Deselect all</button>
+          <button type="button" data-cat-action="visible">Select visible</button>
+          <button type="button" data-cat-action="deselect-visible">Deselect visible</button>
+          <button type="button" data-cat-action="keep-visible">Keep only visible</button>
+        </div>
+        <div id="cat-meta" class="hint"></div>
+        <div class="cat-list" id="cat-list"></div>
+        <div id="cat-warn"></div>
+        <div class="field" style="margin-top:1rem">
+          <label for="max-chunks"><strong>Max error chunks to analyze</strong></label>
+          <input type="number" id="max-chunks" min="1" max="2000" value="10" />
+        </div>
+      </section>
+
+      <section class="lr-section hidden" id="section-explore">
+        <h3>2. Timestamp explorer</h3>
+        <p class="lr-help">Filter masked log lines by category, time range, and keyword.</p>
+        <div class="grid-3">
+          <div class="field">
+            <label>Category</label>
+            <select id="explore-category"></select>
+          </div>
+          <div class="field">
+            <label>Keyword</label>
+            <input type="text" id="explore-keyword" placeholder="ERROR, Solr, …" />
+          </div>
+          <div class="field">
+            <label><input type="checkbox" id="explore-reveal" /> Reveal originals (local only)</label>
+          </div>
+        </div>
+        <div class="grid-2">
+          <div class="field">
+            <label>Start</label>
+            <input type="datetime-local" id="explore-start" />
+          </div>
+          <div class="field">
+            <label>End</label>
+            <input type="datetime-local" id="explore-end" />
+          </div>
+        </div>
+        <button class="btn ghost" type="button" id="btn-explore">Apply filters</button>
+        <div id="explore-meta" class="hint"></div>
+        <div style="overflow:auto; max-height:360px; margin-top:0.75rem">
+          <table class="lines" id="explore-table">
+            <thead>
+              <tr><th>category</th><th>line</th><th>timestamp</th><th>text</th></tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="lr-section">
+        <h3>3. Analyze with LangGraph</h3>
+        <p class="lr-help">Runs parse → diagnose → fix → validate on each error chunk using your selected LLM.</p>
+        <div id="analyze-limit-caption" class="hint"></div>
+        <button class="btn" type="button" id="btn-analyze" disabled>Analyze Log Bundle</button>
+        <div class="progress-wrap hidden" id="progress-wrap">
+          <div class="progress-bar"><span id="progress-fill"></span></div>
+          <div class="hint" id="progress-text"></div>
+        </div>
+        <div id="analyze-status"></div>
+      </section>
+
+      <section class="lr-section hidden" id="section-results">
+        <h3>4. Results</h3>
+        <p class="lr-help">One card per error chunk — diagnosis and playbook side by side.</p>
+        <div id="results-meta" class="hint"></div>
+        <div id="results-list"></div>
+      </section>
+    </main>
+  </div>
+
+  <script>
+    window.LOGRESOLVE_BOOT = {
+      defaults: {{ default_models | tojson }},
+      watsonxSuggestions: {{ watsonx_suggestions | tojson }},
+      saved: {{ saved_settings | tojson }}
+    };
+  </script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

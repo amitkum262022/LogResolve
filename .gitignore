@@ -1,0 +1,21 @@
+# Local secrets / runtime artifacts — never commit
+.local/
+.env
+.env.*
+*.pem
+extracted_logs/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
