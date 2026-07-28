@@ -237,6 +237,128 @@ html, body {
   color: var(--lr-ink);
 }
 
+.dropzone {
+  position: relative;
+  border: 1.5px dashed #8d8d8d;
+  background:
+    linear-gradient(180deg, #fafbfd 0%, #f2f4f8 100%);
+  padding: 1.35rem 1rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.dropzone:hover,
+.dropzone:focus-visible {
+  border-color: var(--lr-accent);
+  outline: none;
+}
+
+.dropzone.dragover {
+  border-color: var(--lr-accent);
+  background: var(--lr-accent-soft);
+}
+
+.dropzone-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  pointer-events: none;
+}
+
+.dropzone-title {
+  font-weight: 650;
+  font-size: 1.02rem;
+  margin-bottom: 0.25rem;
+}
+
+.dropzone-sub {
+  color: var(--lr-muted);
+  font-size: 0.9rem;
+}
+
+.linkish {
+  border: 0;
+  background: none;
+  color: var(--lr-accent);
+  font: inherit;
+  font-weight: 600;
+  padding: 0;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.file-list-wrap {
+  margin-top: 0.75rem;
+  border: 1px solid var(--lr-border);
+  background: #fff;
+}
+
+.file-list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.45rem 0.7rem;
+  border-bottom: 1px solid var(--lr-border);
+  font-size: 0.85rem;
+  color: var(--lr-muted);
+}
+
+.file-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.file-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.5rem 0.7rem;
+  border-bottom: 1px solid var(--lr-border);
+  font-size: 0.9rem;
+}
+
+.file-list li:last-child {
+  border-bottom: 0;
+}
+
+.file-list .file-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.file-list .file-meta {
+  color: var(--lr-muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.file-list .file-remove {
+  border: 1px solid var(--lr-border);
+  background: #fff;
+  color: var(--lr-ink);
+  font: inherit;
+  font-size: 0.78rem;
+  padding: 0.2rem 0.45rem;
+  cursor: pointer;
+}
+
+.file-list .file-remove:hover {
+  border-color: #da1e28;
+  color: #da1e28;
+}
+
 .toolbar {
   display: flex;
   flex-wrap: wrap;

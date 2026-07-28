@@ -104,8 +104,21 @@
 
       <section class="lr-section">
         <h3>1. Ingest logs</h3>
-        <p class="lr-help">Upload a LogCollector .zip, loose .log files, or both.</p>
-        <input type="file" id="file-input" multiple accept=".zip,.log,.txt,.out,.err,.trace" />
+        <p class="lr-help">Upload a LogCollector .zip, loose .log files, or both. Drag and drop or browse — remove any file before loading.</p>
+        <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Drop log files here or browse">
+          <input type="file" id="file-input" class="dropzone-input" multiple accept=".zip,.log,.txt,.out,.err,.trace" />
+          <div class="dropzone-body">
+            <div class="dropzone-title">Drop files here</div>
+            <div class="dropzone-sub">or <button type="button" class="linkish" id="btn-browse-files">browse</button> — .zip, .log, .txt, .out, .err, .trace</div>
+          </div>
+        </div>
+        <div class="file-list-wrap hidden" id="file-list-wrap">
+          <div class="file-list-header">
+            <span id="file-list-count">0 files selected</span>
+            <button type="button" class="linkish" id="btn-clear-files">Clear all</button>
+          </div>
+          <ul class="file-list" id="file-list"></ul>
+        </div>
         <div style="margin-top:0.75rem">
           <button class="btn" id="btn-load" type="button">Load Bundle</button>
         </div>

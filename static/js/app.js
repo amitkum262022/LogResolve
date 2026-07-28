@@ -5,7 +5,10 @@ const state = {
   loaded: false,
   categories: [],
   selected: new Set(),
+  pendingFiles: [],
 };
+
+const ACCEPTED_EXTS = new Set([".zip", ".log", ".txt", ".out", ".err", ".trace"]);
 
 async function api(path, options = {}) {
   const res = await fetch(path, {
@@ -29,6 +32,157 @@ function show(el, on = true) {
 
 function setHtml(el, html) {
   el.innerHTML = html;
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function fileKey(file) {
+  return `${file.name}::${file.size}::${file.lastModified}`;
+}
+
+function formatBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function isAcceptedFile(file) {
+  const name = (file.name || "").toLowerCase();
+  const dot = name.lastIndexOf(".");
+  if (dot < 0) return false;
+  return ACCEPTED_EXTS.has(name.slice(dot));
+}
+
+function addPendingFiles(fileList) {
+  const incoming = [...(fileList || [])].filter(isAcceptedFile);
+  if (!incoming.length) return 0;
+  const seen = new Set(state.pendingFiles.map(fileKey));
+  let added = 0;
+  for (const file of incoming) {
+    const key = fileKey(file);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    state.pendingFiles.push(file);
+    added += 1;
+  }
+  renderPendingFiles();
+  return added;
+}
+
+function removePendingFile(index) {
+  if (index < 0 || index >= state.pendingFiles.length) return;
+  state.pendingFiles.splice(index, 1);
+  renderPendingFiles();
+}
+
+function clearPendingFiles() {
+  state.pendingFiles = [];
+  const input = $("file-input");
+  if (input) input.value = "";
+  renderPendingFiles();
+}
+
+function renderPendingFiles() {
+  const wrap = $("file-list-wrap");
+  const list = $("file-list");
+  const count = $("file-list-count");
+  if (!wrap || !list || !count) return;
+  const n = state.pendingFiles.length;
+  show(wrap, n > 0);
+  count.textContent = `${n} file${n === 1 ? "" : "s"} selected`;
+  list.innerHTML = "";
+  state.pendingFiles.forEach((file, idx) => {
+    const li = document.createElement("li");
+    li.innerHTML = `
+      <span class="file-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</span>
+      <span class="file-meta">${escapeHtml(formatBytes(file.size))}</span>
+      <button type="button" class="file-remove" data-remove-idx="${idx}" aria-label="Remove ${escapeHtml(file.name)}">Remove</button>
+    `;
+    list.appendChild(li);
+  });
+}
+
+function initFileDropzone() {
+  const zone = $("dropzone");
+  const input = $("file-input");
+  const browse = $("btn-browse-files");
+  if (!zone || !input) return;
+
+  const stop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
+  // Prevent the browser from opening dropped files as a new tab.
+  ["dragenter", "dragover", "drop"].forEach((evt) => {
+    window.addEventListener(evt, (e) => {
+      if (e.dataTransfer && [...e.dataTransfer.types].includes("Files")) stop(e);
+    });
+  });
+
+  ["dragenter", "dragover"].forEach((evt) => {
+    zone.addEventListener(evt, (e) => {
+      stop(e);
+      zone.classList.add("dragover");
+    });
+  });
+  ["dragleave", "dragend"].forEach((evt) => {
+    zone.addEventListener(evt, (e) => {
+      stop(e);
+      zone.classList.remove("dragover");
+    });
+  });
+  zone.addEventListener("drop", (e) => {
+    stop(e);
+    zone.classList.remove("dragover");
+    const files = e.dataTransfer && e.dataTransfer.files;
+    const added = addPendingFiles(files);
+    if (files && files.length && !added) {
+      setHtml(
+        $("load-status"),
+        `<div class="error">No accepted files in drop. Use .zip, .log, .txt, .out, .err, or .trace.</div>`
+      );
+    }
+  });
+
+  zone.addEventListener("click", (e) => {
+    if (e.target.closest(".linkish")) return;
+    input.click();
+  });
+
+  zone.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      input.click();
+    }
+  });
+
+  input.addEventListener("change", () => {
+    addPendingFiles(input.files);
+    input.value = "";
+  });
+
+  if (browse) {
+    browse.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      input.click();
+    });
+  }
+
+  $("file-list")?.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-remove-idx]");
+    if (!btn) return;
+    removePendingFile(Number(btn.getAttribute("data-remove-idx")));
+  });
+
+  $("btn-clear-files")?.addEventListener("click", () => clearPendingFiles());
 }
 
 function currentProvider() {
@@ -207,14 +361,6 @@ function fillExploreCategorySelect() {
   if ([...sel.options].some((o) => o.value === current)) sel.value = current;
 }
 
-function escapeHtml(s) {
-  return String(s)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
 function renderResults(results, meta = {}) {
   const section = $("section-results");
   show(section, results && results.length);
@@ -266,6 +412,7 @@ async function init() {
   state.sid = sess.sid;
 
   initConfigToggle();
+  initFileDropzone();
 
   $("provider").addEventListener("change", updateProviderPanels);
   ["openai_model", "anthropic_model", "gemini_model", "watsonx_model", "ollama_model"].forEach((id) => {
@@ -305,15 +452,15 @@ async function init() {
   });
 
   $("btn-load").addEventListener("click", async () => {
-    const files = $("file-input").files;
-    if (!files || !files.length) {
-      setHtml($("load-status"), `<div class="error">Please upload at least one file.</div>`);
+    const files = state.pendingFiles;
+    if (!files.length) {
+      setHtml($("load-status"), `<div class="error">Please add at least one file (browse or drag and drop).</div>`);
       return;
     }
     const fd = new FormData();
-    [...files].forEach((f) => fd.append("files", f));
+    files.forEach((f) => fd.append("files", f));
     fd.append("do_mask", $("do_mask").checked ? "true" : "false");
-    setHtml($("load-status"), `<div class="info">Extracting and indexing…</div>`);
+    setHtml($("load-status"), `<div class="info">Extracting and indexing ${files.length} file(s)…</div>`);
     try {
       const res = await fetch("/api/load", { method: "POST", body: fd, credentials: "same-origin" });
       const data = await res.json();
@@ -327,7 +474,7 @@ async function init() {
       await syncSelection();
       setHtml(
         $("load-status"),
-        `<div class="success">Loaded ${data.count} categor(ies): ${escapeHtml(state.categories.join(", "))}</div>`
+        `<div class="success">Loaded ${data.count} categor(ies) from ${files.length} file(s): ${escapeHtml(state.categories.join(", "))}</div>`
       );
       $("btn-analyze").disabled = false;
     } catch (e) {
